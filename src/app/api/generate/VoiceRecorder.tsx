@@ -13,10 +13,32 @@ interface VoiceRecorderProps {
 export default function VoiceRecorder({ onTranscript, onError, onListeningChange, isListening }: VoiceRecorderProps) {
   const recognitionRef = useRef<any>(null)
   const [isBrowserSupported, setIsBrowserSupported] = useState(true)
+  const [micPermission, setMicPermission] = useState<'prompt' | 'granted' | 'denied'>('prompt')
   const shouldListenRef = useRef(false)
   const retryCountRef = useRef(0)
   const maxRetriesRef = useRef(3)
   const isStoppingRef = useRef(false)
+  const micStreamRef = useRef<MediaStream | null>(null)
+
+  // Check microphone permission on mount
+  useEffect(() => {
+    const checkPermission = async () => {
+      try {
+        if (navigator.permissions && navigator.permissions.query) {
+          const permissionStatus = await navigator.permissions.query({ name: 'microphone' as PermissionName })
+          setMicPermission(permissionStatus.state as 'prompt' | 'granted' | 'denied')
+          
+          permissionStatus.onchange = () => {
+            setMicPermission(permissionStatus.state as 'prompt' | 'granted' | 'denied')
+          }
+        }
+      } catch (error) {
+        console.log("[v0] Permission API not supported, will request on use")
+      }
+    }
+    
+    checkPermission()
+  }, [])
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -129,20 +151,60 @@ export default function VoiceRecorder({ onTranscript, onError, onListeningChange
       if (recognitionRef.current) {
         recognitionRef.current.abort()
       }
+      // Clean up microphone stream on unmount
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => track.stop())
+        micStreamRef.current = null
+      }
     }
   }, [onTranscript, onError, onListeningChange])
 
-  const startListening = () => {
-    if (recognitionRef.current && isBrowserSupported) {
-      console.log("[v0] Starting listening...")
-      shouldListenRef.current = true
-      isStoppingRef.current = false
-      retryCountRef.current = 0
-      try {
-        recognitionRef.current.start()
-      } catch (e) {
-        console.log("[v0] Error starting recognition:", e)
+  const requestMicrophonePermission = async () => {
+    try {
+      console.log("[v0] Requesting microphone permission...")
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      console.log("[v0] Microphone permission granted")
+      micStreamRef.current = stream
+      setMicPermission('granted')
+      return true
+    } catch (error: any) {
+      console.log("[v0] Microphone permission error:", error)
+      setMicPermission('denied')
+      
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+        onError("Microphone access denied. Please click the microphone button again and allow access when prompted.")
+      } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
+        onError("No microphone found. Please connect a microphone and try again.")
+      } else {
+        onError("Could not access microphone. Please check your browser settings.")
       }
+      return false
+    }
+  }
+
+  const startListening = async () => {
+    if (!recognitionRef.current || !isBrowserSupported) return
+
+    console.log("[v0] Starting listening...")
+    
+    // First, request microphone permission
+    const hasPermission = await requestMicrophonePermission()
+    
+    if (!hasPermission) {
+      console.log("[v0] No microphone permission, cannot start")
+      return
+    }
+
+    shouldListenRef.current = true
+    isStoppingRef.current = false
+    retryCountRef.current = 0
+    onError("") // Clear any previous errors
+    
+    try {
+      recognitionRef.current.start()
+    } catch (e) {
+      console.log("[v0] Error starting recognition:", e)
+      onError("Failed to start voice recognition. Please try again.")
     }
   }
 
@@ -150,12 +212,19 @@ export default function VoiceRecorder({ onTranscript, onError, onListeningChange
     if (recognitionRef.current) {
       console.log("[v0] Stopping listening...")
       shouldListenRef.current = false
-      isStoppingRef.current = true // Set stopping flag
+      isStoppingRef.current = true
       try {
         recognitionRef.current.abort()
       } catch (e) {
         console.log("[v0] Error stopping recognition:", e)
       }
+      
+      // Stop microphone stream
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => track.stop())
+        micStreamRef.current = null
+      }
+      
       onListeningChange(false)
     }
   }
@@ -176,19 +245,22 @@ export default function VoiceRecorder({ onTranscript, onError, onListeningChange
         <div className="flex flex-col items-center gap-6">
           <div className="text-center">
             <p className="text-purple-700 font-bold text-lg mb-2">
-              {isListening ? "Listening..." : "Ready to listen!"}
+              {isListening ? "🎤 Listening..." : "🎙️ Voice Input"}
             </p>
             <p className="text-purple-600 text-sm">
-              {isListening ? "Keep talking! I'm recording your voice." : "Click the microphone button to start."}
+              {isListening ? "Keep talking! I'm recording your voice." : "Click the microphone to speak your idea"}
             </p>
           </div>
 
           <button
             onClick={isListening ? stopListening : startListening}
+            disabled={micPermission === 'denied' && !isListening}
             className={`relative w-24 h-24 rounded-full flex items-center justify-center font-bold text-white text-lg transition-all duration-300 ${
               isListening
                 ? "bg-red-500 hover:bg-red-600 animate-pulse-glow"
-                : "bg-gradient-to-br from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-lg hover:shadow-xl"
+                : micPermission === 'denied'
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-gradient-to-br from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-lg hover:shadow-xl hover:scale-105"
             }`}
           >
             {isListening ? <Square size={40} className="fill-white" /> : <Mic size={40} />}
@@ -196,9 +268,56 @@ export default function VoiceRecorder({ onTranscript, onError, onListeningChange
 
           <div className="text-center">
             <p className="text-purple-600 text-sm font-medium">
-              {isListening ? "Tap the red button to stop" : "Tap the button to start speaking"}
+              {isListening ? "Tap to stop recording" : "Tap to start speaking"}
             </p>
           </div>
+
+          {/* Permission Status and Instructions */}
+          {!isListening && (
+            <>
+              {micPermission === 'denied' && (
+                <div className="w-full bg-red-50 border-2 border-red-300 rounded-xl p-4 text-sm">
+                  <p className="font-bold text-red-700 mb-2">🚫 Microphone Access Blocked</p>
+                  <p className="text-gray-700 mb-3">To use voice input, you need to enable microphone access:</p>
+                  <div className="bg-white rounded-lg p-3 text-left space-y-2 text-xs">
+                    <p className="font-semibold text-gray-800">📱 On Mobile:</p>
+                    <ul className="list-disc list-inside space-y-1 text-gray-600 ml-2">
+                      <li>Go to your phone Settings</li>
+                      <li>Find your browser (Chrome/Safari)</li>
+                      <li>Enable Microphone permission</li>
+                      <li>Refresh this page and try again</li>
+                    </ul>
+                    <p className="font-semibold text-gray-800 mt-3">💻 On Desktop:</p>
+                    <ul className="list-disc list-inside space-y-1 text-gray-600 ml-2">
+                      <li>Click the 🔒 lock icon in address bar</li>
+                      <li>Find "Microphone" setting</li>
+                      <li>Change to "Allow"</li>
+                      <li>Refresh and try again</li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+              
+              {micPermission === 'prompt' && (
+                <div className="w-full bg-blue-50 border-2 border-blue-200 rounded-xl p-3 text-xs">
+                  <p className="font-semibold text-blue-700 mb-1">💡 Tip:</p>
+                  <p className="text-gray-700">
+                    When you click the microphone, your browser will ask for permission. 
+                    Click <strong>"Allow"</strong> to use voice input.
+                  </p>
+                </div>
+              )}
+              
+              {micPermission === 'granted' && (
+                <div className="w-full bg-green-50 border-2 border-green-200 rounded-xl p-3 text-xs">
+                  <p className="font-semibold text-green-700 mb-1">✅ Microphone Ready</p>
+                  <p className="text-gray-700">
+                    Click the button above and start speaking your coloring page idea!
+                  </p>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 
