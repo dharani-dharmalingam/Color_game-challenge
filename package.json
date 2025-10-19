@@ -8,32 +8,21 @@
     "start": "next start"
   },
   "dependencies": {
-<<<<<<< HEAD
-    "react": "19.1.0",
-    "react-dom": "19.1.0",
-    "next": "15.5.6"
-  },
-  "devDependencies": {
-    "typescript": "^5",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "@tailwindcss/postcss": "^4",
-    "tailwindcss": "^4"
-=======
     "lucide-react": "^0.546.0",
     "next": "15.5.6",
     "react": "19.1.0",
-    "react-dom": "19.1.0",
-    "react-icons": "^5.5.0"
+    "react-dom": "19.1.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "next": "15.5.6",
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-icons": "^5.5.0",
     "tailwindcss": "^4",
     "typescript": "^5"
->>>>>>> 474d8d2 (voice to image done)
   }
 }
