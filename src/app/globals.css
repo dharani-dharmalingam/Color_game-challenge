@@ -1,0 +1,53 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  background: linear-gradient(180deg, #6b46c1 0%, #7c3aed 50%, #8b5cf6 100%);
+  min-height: 100vh;
+}
+
+/* Decorative clouds at bottom */
+.clouds-bottom {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 200px;
+  background-image: 
+    radial-gradient(circle at 15% 100%, white 0%, white 60%, transparent 60%),
+    radial-gradient(circle at 35% 110%, white 0%, white 50%, transparent 50%),
+    radial-gradient(circle at 25% 105%, white 0%, white 55%, transparent 55%),
+    radial-gradient(circle at 55% 100%, white 0%, white 60%, transparent 60%),
+    radial-gradient(circle at 75% 110%, white 0%, white 50%, transparent 50%),
+    radial-gradient(circle at 65% 105%, white 0%, white 55%, transparent 55%),
+    radial-gradient(circle at 85% 100%, white 0%, white 60%, transparent 60%),
+    radial-gradient(circle at 95% 105%, white 0%, white 55%, transparent 55%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Fun animations */
+@keyframes bounce {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
+}
+
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
