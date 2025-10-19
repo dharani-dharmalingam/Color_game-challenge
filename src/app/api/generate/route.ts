@@ -230,6 +230,9 @@ export async function POST(req: NextRequest) {
             console.log("⚠️ Video generation error:", videoError.message, "- continuing with image only");
           }
           
+          console.log("✅ Final response - Image URL:", imageUrl);
+          console.log("✅ Final response - Video URL:", videoUrl);
+          
           return NextResponse.json({
             success: true,
             prompt,
