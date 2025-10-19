@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { Mic, Square } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { Mic, Square, Globe } from "lucide-react";
 
 interface VoiceRecorderProps {
   onTranscript: (text: string) => void;
@@ -10,31 +10,69 @@ interface VoiceRecorderProps {
   isListening: boolean;
 }
 
+// Supported languages with their codes
+const SUPPORTED_LANGUAGES = [
+  { code: 'en-US', name: 'English', flag: '🇺🇸' },
+  { code: 'ta-IN', name: 'Tamil', flag: '🇮🇳' },
+  { code: 'hi-IN', name: 'Hindi', flag: '🇮🇳' },
+  { code: 'es-ES', name: 'Spanish', flag: '🇪🇸' },
+  { code: 'fr-FR', name: 'French', flag: '🇫🇷' },
+  { code: 'de-DE', name: 'German', flag: '🇩🇪' },
+  { code: 'it-IT', name: 'Italian', flag: '🇮🇹' },
+  { code: 'pt-BR', name: 'Portuguese', flag: '🇧🇷' },
+  { code: 'ru-RU', name: 'Russian', flag: '🇷🇺' },
+  { code: 'ja-JP', name: 'Japanese', flag: '🇯🇵' },
+  { code: 'ko-KR', name: 'Korean', flag: '🇰🇷' },
+  { code: 'zh-CN', name: 'Chinese', flag: '🇨🇳' },
+  { code: 'ar-SA', name: 'Arabic', flag: '🇸🇦' },
+  { code: 'nl-NL', name: 'Dutch', flag: '🇳🇱' },
+  { code: 'sv-SE', name: 'Swedish', flag: '🇸🇪' },
+  { code: 'no-NO', name: 'Norwegian', flag: '🇳🇴' },
+  { code: 'da-DK', name: 'Danish', flag: '🇩🇰' },
+  { code: 'fi-FI', name: 'Finnish', flag: '🇫🇮' },
+  { code: 'pl-PL', name: 'Polish', flag: '🇵🇱' },
+  { code: 'tr-TR', name: 'Turkish', flag: '🇹🇷' }
+];
+
 export default function VoiceRecorder({
   onTranscript,
   onError,
   onListeningChange,
   isListening,
 }: VoiceRecorderProps) {
-  const recognitionRef = useRef<any>(null);
-  const [isBrowserSupported, setIsBrowserSupported] = useState(true);
+  const [transcript, setTranscript] = useState("");
+  const [listening, setListening] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState('en-US');
+  const [isAutoDetect, setIsAutoDetect] = useState(true);
   const [isHttpsSecure, setIsHttpsSecure] = useState(true);
   const [micPermission, setMicPermission] = useState<
     "prompt" | "granted" | "denied"
   >("prompt");
+  const [browserSupportsSpeechRecognition, setBrowserSupportsSpeechRecognition] = useState(true);
+  const [isMicrophoneAvailable, setIsMicrophoneAvailable] = useState(true);
   const [isRetrying, setIsRetrying] = useState(false);
 
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const shouldListenRef = useRef(false);
   const retryCountRef = useRef(0);
-  const maxRetriesRef = useRef(10); // Max auto-restart attempts
-  const isStoppingRef = useRef(false);
+  const maxRetriesRef = useRef(3);
+  const networkErrorCountRef = useRef(0);
+  const maxNetworkErrorsRef = useRef(2);
   const micStreamRef = useRef<MediaStream | null>(null);
   const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const hasReceivedSpeechRef = useRef(false); // Track if we've received any speech
 
-  // ✅ Check HTTPS and browser support on mount
+  // Initialize Speech Recognition
   useEffect(() => {
-    // Check if served over HTTPS (or localhost)
+    const SpeechRecognition =
+      window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setBrowserSupportsSpeechRecognition(false);
+      onError("Speech recognition is not supported. Please use Chrome, Edge, or Safari.");
+      return;
+    }
+
+    // Check HTTPS
     if (typeof window !== "undefined") {
       const isSecure =
         window.location.protocol === "https:" ||
@@ -44,23 +82,153 @@ export default function VoiceRecorder({
       setIsHttpsSecure(isSecure);
 
       if (!isSecure) {
-        onError(
-          "⚠️ Voice recognition requires HTTPS. Please access this site using https://"
-        );
+        onError("⚠️ Voice recognition requires HTTPS. Please access this site using https://");
         return;
       }
     }
 
-    // Check if getUserMedia is available
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setIsBrowserSupported(false);
-      onError(
-        "Microphone access not supported in this browser. Please use Chrome, Edge, or Safari."
-      );
-      return;
-    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = selectedLanguage;
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
 
-    // Check microphone permission status
+    recognition.onstart = () => {
+      console.log("🎤 Speech recognition started");
+      setListening(true);
+      setIsRetrying(false);
+      retryCountRef.current = 0;
+      onListeningChange(true);
+      onError("");
+    };
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interimTranscript = "";
+      let finalTranscript = "";
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const transcriptChunk = event.results[i][0].transcript;
+        if (event.results[i].isFinal) {
+          finalTranscript += transcriptChunk + " ";
+        } else {
+          interimTranscript += transcriptChunk;
+        }
+      }
+
+      const fullTranscript = finalTranscript + interimTranscript;
+      setTranscript(fullTranscript);
+      onTranscript(fullTranscript);
+    };
+
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+      
+      let errorMsg = "";
+      let shouldStop = false;
+
+      switch (event.error) {
+        case "no-speech":
+          console.log("No speech detected, will retry...");
+          return; // Don't show error, just retry
+          
+        case "aborted":
+          console.log("Recognition aborted by user");
+          return;
+          
+        case "audio-capture":
+          errorMsg = "❌ No microphone found. Please connect a microphone.";
+          shouldStop = true;
+          break;
+          
+        case "not-allowed":
+          errorMsg = "🚫 Microphone access denied. Please allow access in settings.";
+          setMicPermission("denied");
+          setIsMicrophoneAvailable(false);
+          shouldStop = true;
+          break;
+          
+        case "network":
+          networkErrorCountRef.current += 1;
+          console.error(`Network error ${networkErrorCountRef.current}/${maxNetworkErrorsRef.current}`);
+          
+          if (networkErrorCountRef.current >= maxNetworkErrorsRef.current) {
+            errorMsg = "🌐 Network Error: Unable to connect to speech service. Please check:\n• Your internet connection is working\n• You're using HTTPS (not HTTP)\n• Try refreshing the page";
+            shouldStop = true;
+          } else {
+            // Don't show error yet, will retry
+            console.log("Network error, will retry...");
+            return;
+          }
+          break;
+          
+        case "service-not-allowed":
+          errorMsg = "🔒 Speech service not allowed. Make sure you're using HTTPS.";
+          shouldStop = true;
+          break;
+          
+        default:
+          errorMsg = `Error: ${event.error}`;
+          shouldStop = true;
+      }
+
+      if (shouldStop) {
+        onError(errorMsg);
+        setListening(false);
+        onListeningChange(false);
+        shouldListenRef.current = false;
+        setIsRetrying(false);
+      }
+    };
+
+    recognition.onend = () => {
+      console.log("🛑 Speech recognition ended");
+      setListening(false);
+      onListeningChange(false);
+
+      // Clear any pending restart timeout
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
+      }
+
+      // Auto-restart if user didn't stop it and we haven't hit max retries
+      if (shouldListenRef.current && retryCountRef.current < maxRetriesRef.current) {
+        retryCountRef.current += 1;
+        setIsRetrying(true);
+        
+        // Use exponential backoff for retries
+        const delay = Math.min(1000 * retryCountRef.current, 3000);
+        console.log(`🔄 Scheduling restart attempt ${retryCountRef.current}/${maxRetriesRef.current} in ${delay}ms...`);
+        
+        restartTimeoutRef.current = setTimeout(() => {
+          if (shouldListenRef.current) {
+            try {
+              console.log("🔄 Attempting to restart recognition...");
+              recognition.start();
+            } catch (error) {
+              console.error("Failed to restart recognition:", error);
+              setIsRetrying(false);
+              if (retryCountRef.current >= maxRetriesRef.current) {
+                onError("Voice recognition stopped after multiple attempts. Please click the microphone to try again.");
+                shouldListenRef.current = false;
+              }
+        }
+      } else {
+            setIsRetrying(false);
+          }
+        }, delay);
+      } else {
+        setIsRetrying(false);
+        retryCountRef.current = 0;
+        if (retryCountRef.current >= maxRetriesRef.current) {
+          onError("Voice recognition stopped after multiple attempts. Please click the microphone to try again.");
+        }
+      }
+    };
+
+    recognitionRef.current = recognition;
+
+    // Check microphone permission
     const checkPermission = async () => {
       try {
         if (navigator.permissions && navigator.permissions.query) {
@@ -68,226 +236,76 @@ export default function VoiceRecorder({
             name: "microphone" as PermissionName,
           });
           setMicPermission(permissionStatus.state as any);
+          setIsMicrophoneAvailable(permissionStatus.state !== "denied");
 
-          // Listen for permission changes
           permissionStatus.onchange = () => {
             const newState = permissionStatus.state as any;
-            console.log("[v0] Mic permission changed to:", newState);
             setMicPermission(newState);
+            setIsMicrophoneAvailable(newState !== "denied");
 
             if (newState === "denied") {
-              onError(
-                "Microphone access was denied. Please enable it in your browser settings."
-              );
-              // Stop listening if currently active
-              if (shouldListenRef.current && recognitionRef.current) {
-                shouldListenRef.current = false;
-                isStoppingRef.current = true;
-                try {
-                  recognitionRef.current.abort();
-                } catch (e) {
-                  console.log("[v0] Error stopping on permission change:", e);
-                }
-                onListeningChange(false);
-              }
+              onError("Microphone access was denied. Please enable it in your browser settings.");
             } else if (newState === "granted") {
-              onError(""); // Clear error
+              onError("");
             }
           };
         }
       } catch (error) {
-        console.log("[v0] Permission API not available:", error);
-        // Permission API not supported, will handle on getUserMedia call
+        console.log("Permission API not available:", error);
       }
     };
 
     checkPermission();
-  }, [onError]);
 
-  // ✅ Initialize SpeechRecognition
-  useEffect(() => {
-    const SpeechRecognition =
-      (window as any).SpeechRecognition ||
-      (window as any).webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      setIsBrowserSupported(false);
-      onError(
-        "Speech recognition is not supported. Please use Chrome, Edge, or Safari."
-      );
-      return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.maxAlternatives = 1;
-
-    recognition.onstart = () => {
-      console.log("[v0] ✅ Speech recognition started successfully");
-      retryCountRef.current = 0; // Reset retry counter on successful start
-      hasReceivedSpeechRef.current = false;
-      setIsRetrying(false); // Clear retrying state
-      onListeningChange(true);
-      onError("");
+    // Listen for online/offline events
+    const handleOnline = () => {
+      console.log("✅ Back online");
+      networkErrorCountRef.current = 0; // Reset network errors when back online
     };
 
-    recognition.onresult = (event: any) => {
-      console.log("[v0] 🎤 Speech detected, processing results...");
-      hasReceivedSpeechRef.current = true; // Mark that we've received speech
-      retryCountRef.current = 0; // Reset retry counter when speech is detected
-      
-      let interimTranscript = "";
-      let finalTranscript = "";
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
-        if (event.results[i].isFinal) {
-          finalTranscript += transcript + " ";
-          console.log("[v0] Final:", finalTranscript);
-        } else {
-          interimTranscript += transcript;
-          console.log("[v0] Interim:", interimTranscript);
-        }
-      }
-
-      if (finalTranscript) onTranscript(finalTranscript);
-      else if (interimTranscript) onTranscript(interimTranscript);
-    };
-
-    recognition.onerror = (event: any) => {
-      console.log("[v0] Speech error:", event.error);
-      let errorMsg = "An error occurred";
-
-      switch (event.error) {
-        case "no-speech":
-          errorMsg = "No speech detected. Please speak louder or closer.";
-          break;
-        case "audio-capture":
-          errorMsg = "No microphone found. Please check your device.";
-          break;
-        case "not-allowed":
-          errorMsg =
-            "Microphone permission denied. Please allow access in settings.";
-          setMicPermission("denied");
-          break;
-        default:
-          errorMsg = event.error;
-      }
-
-      onError(errorMsg);
-      if (!shouldListenRef.current || isStoppingRef.current) {
-        onListeningChange(false);
-      }
-    };
-
-    recognition.onend = () => {
-      console.log(
-        "[v0] 🛑 Speech recognition ended. shouldListen:",
-        shouldListenRef.current,
-        "isStopping:",
-        isStoppingRef.current,
-        "retryCount:",
-        retryCountRef.current,
-        "hasReceivedSpeech:",
-        hasReceivedSpeechRef.current
-      );
-
-      // Clear any pending restart timeout
-      if (restartTimeoutRef.current) {
-        clearTimeout(restartTimeoutRef.current);
-        restartTimeoutRef.current = null;
-      }
-
-      // If user stopped or we've hit max retries, don't restart
-      if (!shouldListenRef.current || isStoppingRef.current) {
-        console.log("[v0] Not restarting - user stopped");
-        onListeningChange(false);
-        return;
-      }
-
-      // Check retry limit
-      if (retryCountRef.current >= maxRetriesRef.current) {
-        console.log("[v0] ⚠️ Max restart attempts reached. Stopping.");
+    const handleOffline = () => {
+      console.log("❌ Gone offline");
+      if (shouldListenRef.current) {
+        onError("❌ Lost internet connection. Voice recognition requires internet access.");
+        // Stop listening
         shouldListenRef.current = false;
-        onError(
-          "Voice recognition stopped after multiple attempts. Please click the microphone to try again."
-        );
-        onListeningChange(false);
-        return;
-      }
-
-      // Restart with exponential backoff delay
-      retryCountRef.current += 1;
-      const delay = Math.min(1000 * retryCountRef.current, 3000); // Max 3 second delay
-      
-      console.log(
-        `[v0] 🔄 Scheduling restart attempt ${retryCountRef.current}/${maxRetriesRef.current} in ${delay}ms...`
-      );
-
-      setIsRetrying(true); // Show user we're retrying
-
-      restartTimeoutRef.current = setTimeout(() => {
-        if (shouldListenRef.current && !isStoppingRef.current) {
+        setIsRetrying(false);
+        if (recognitionRef.current) {
           try {
-            console.log("[v0] Attempting to restart recognition...");
-            recognition.start();
-          } catch (error: any) {
-            console.error("[v0] Failed to restart:", error);
-            setIsRetrying(false);
-            
-            if (error.name === "InvalidStateError") {
-              // Already running, ignore
-              console.log("[v0] Recognition already running");
-              setIsRetrying(false);
-            } else {
-              onError(
-                "Failed to restart voice recognition. Please click the microphone button again."
-              );
-              shouldListenRef.current = false;
-              onListeningChange(false);
-            }
+            recognitionRef.current.stop();
+          } catch (e) {
+            console.log("Error stopping on offline:", e);
           }
-        } else {
-          setIsRetrying(false);
         }
-      }, delay);
+      }
     };
 
-    recognitionRef.current = recognition;
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
 
     return () => {
-      // Cleanup on unmount
-      console.log("[v0] Cleaning up recognition...");
-      
       // Clear any pending restart timeout
       if (restartTimeoutRef.current) {
         clearTimeout(restartTimeoutRef.current);
         restartTimeoutRef.current = null;
       }
       
-      // Stop recognition
-      try {
-        recognition.abort();
-      } catch (e) {
-        console.log("[v0] Error aborting on cleanup:", e);
-      }
+      // Remove event listeners
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
       
-      // Stop microphone stream
+      if (recognitionRef.current) {
+        recognitionRef.current.abort();
+      }
       if (micStreamRef.current) {
-        micStreamRef.current.getTracks().forEach((t) => t.stop());
-        micStreamRef.current = null;
+        micStreamRef.current.getTracks().forEach((track) => track.stop());
       }
     };
-  }, [onTranscript, onError, onListeningChange]);
+  }, [selectedLanguage, onError, onTranscript, onListeningChange]);
 
-  // ✅ Request mic permission explicitly (must be called from user gesture)
+  // Request microphone permission explicitly
   const requestMicrophonePermission = async (): Promise<boolean> => {
     try {
-      console.log("[v0] Requesting microphone access...");
-
-      // Request microphone access - this MUST be triggered by user gesture
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -296,138 +314,115 @@ export default function VoiceRecorder({
         },
       });
 
-      console.log("[v0] Microphone access granted!");
       micStreamRef.current = stream;
       setMicPermission("granted");
-      onError(""); // Clear any errors
+      setIsMicrophoneAvailable(true);
+      onError("");
       return true;
     } catch (error: any) {
-      console.error("[v0] Microphone access error:", error);
+      console.error("Microphone access error:", error);
 
-      // Handle specific error types
       if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
         setMicPermission("denied");
-        onError(
-          "🚫 Microphone access denied. Please click 'Allow' when prompted, or enable microphone in your browser settings."
-        );
+        setIsMicrophoneAvailable(false);
+        onError("🚫 Microphone access denied. Please click 'Allow' when prompted, or enable microphone in your browser settings.");
       } else if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
-        onError(
-          "❌ No microphone found. Please connect a microphone and try again."
-        );
+        onError("❌ No microphone found. Please connect a microphone and try again.");
       } else if (error.name === "NotReadableError") {
-        onError(
-          "⚠️ Microphone is already in use by another application. Please close other apps and try again."
-        );
-      } else if (error.name === "OverconstrainedError") {
-        onError(
-          "⚠️ Microphone doesn't meet requirements. Please try a different microphone."
-        );
+        onError("⚠️ Microphone is already in use by another application. Please close other apps and try again.");
       } else if (error.name === "SecurityError") {
-        onError(
-          "🔒 Security error: Microphone access requires HTTPS or localhost."
-        );
+        onError("🔒 Security error: Microphone access requires HTTPS or localhost.");
       } else {
-        onError(
-          `❌ Could not access microphone: ${error.message || error.name || "Unknown error"}`
-        );
+        onError(`❌ Could not access microphone: ${error.message || error.name || "Unknown error"}`);
       }
 
       return false;
     }
   };
 
-  // ✅ Start recording (triggered by user click/tap - user gesture required)
+  // Start listening with selected language
   const startListening = async () => {
-    if (!recognitionRef.current || !isBrowserSupported || !isHttpsSecure) {
-      console.log("[v0] Cannot start - missing requirements");
+    if (!browserSupportsSpeechRecognition) {
+      onError("Speech recognition is not supported. Please use Chrome, Edge, or Safari.");
       return;
     }
 
-    console.log("[v0] Start listening called - requesting mic permission...");
+    if (!isHttpsSecure) {
+      onError("Voice recognition requires HTTPS. Please access this site using https://");
+      return;
+    }
 
-    // ⚠️ CRITICAL: This must be called directly from user gesture (button click)
-    // Request microphone access with getUserMedia
+    // Request microphone permission
     const hasPermission = await requestMicrophonePermission();
-
     if (!hasPermission) {
-      console.log("[v0] Permission denied or error occurred");
       return;
     }
 
-    // Permission granted, now start speech recognition
-    shouldListenRef.current = true;
-    isStoppingRef.current = false;
-    retryCountRef.current = 0;
-    onError(""); // Clear any previous errors
-
-    try {
-      console.log("[v0] Starting speech recognition...");
-      recognitionRef.current.start();
-    } catch (error: any) {
-      console.error("[v0] Failed to start recognition:", error);
-      
-      if (error.name === "InvalidStateError") {
-        // Recognition already started, try stopping and restarting
-        try {
-          recognitionRef.current.stop();
-          setTimeout(() => {
-            try {
-              recognitionRef.current.start();
-            } catch (e) {
-              onError("Failed to restart recognition. Please refresh the page.");
-            }
-          }, 100);
-      } catch (e) {
-          onError("Recognition is already running. Please wait.");
+    if (recognitionRef.current) {
+      // Clear any pending restart timeout
+      if (restartTimeoutRef.current) {
+        clearTimeout(restartTimeoutRef.current);
+        restartTimeoutRef.current = null;
       }
-      } else {
-        onError(`Failed to start voice recognition: ${error.message || "Please try again"}`);
+      
+      // Update language if changed
+      const language = isAutoDetect ? 'en-US' : selectedLanguage;
+      recognitionRef.current.lang = language;
+      
+      shouldListenRef.current = true;
+      retryCountRef.current = 0;
+      networkErrorCountRef.current = 0; // Reset network error count
+      setIsRetrying(false);
+      
+      try {
+        recognitionRef.current.start();
+      } catch (error: any) {
+        console.error("Failed to start recognition:", error);
+        if (error.name === "InvalidStateError") {
+          onError("Recognition is already running. Please wait.");
+        } else {
+          onError(`Failed to start voice recognition: ${error.message || "Please try again"}`);
+        }
+      }
     }
-  }
   };
 
-  // ✅ Stop recording and cleanup
+  // Stop listening
   const stopListening = () => {
-    console.log("[v0] 🛑 Stopping listening...");
-
+    shouldListenRef.current = false;
+    setIsRetrying(false);
+    
     // Clear any pending restart timeout
     if (restartTimeoutRef.current) {
-      console.log("[v0] Clearing pending restart timeout");
       clearTimeout(restartTimeoutRef.current);
       restartTimeoutRef.current = null;
     }
-
-    // Set flags to prevent restart
-    shouldListenRef.current = false;
-    isStoppingRef.current = true;
-    setIsRetrying(false); // Clear retrying state
-
-    // Stop speech recognition
+    
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.abort();
-      } catch (e) {
-        console.log("[v0] Error stopping recognition:", e);
+        recognitionRef.current.stop();
+      } catch (error) {
+        console.error("Error stopping recognition:", error);
       }
     }
 
     // Stop and release microphone stream
     if (micStreamRef.current) {
-      console.log("[v0] Releasing microphone stream...");
-      micStreamRef.current.getTracks().forEach((track) => {
-        track.stop();
-        console.log("[v0] Track stopped:", track.label);
-      });
+      micStreamRef.current.getTracks().forEach((track) => track.stop());
       micStreamRef.current = null;
     }
+  };
 
-    onListeningChange(false);
+  // Reset transcript
+  const resetTranscript = () => {
+    setTranscript("");
+    onTranscript("");
   };
 
   // Show error if HTTPS is not enabled
   if (!isHttpsSecure) {
     return (
-      <div className="bg-red-100 border-2 border-red-400 rounded-2xl p-6 text-center">
+      <div className="bg-red-50 rounded-2xl p-6 text-center">
         <p className="text-red-700 font-bold mb-2">🔒 HTTPS Required</p>
         <p className="text-red-600 text-sm">
           Voice recognition requires a secure connection (HTTPS).
@@ -440,9 +435,9 @@ export default function VoiceRecorder({
   }
 
   // Show error if browser doesn't support voice recognition
-  if (!isBrowserSupported) {
+  if (!browserSupportsSpeechRecognition) {
     return (
-      <div className="bg-red-100 border-2 border-red-400 rounded-2xl p-6 text-center">
+      <div className="bg-red-50 rounded-2xl p-6 text-center">
         <p className="text-red-700 font-bold mb-2">❌ Not Supported</p>
         <p className="text-red-600 text-sm">
           Your browser doesn't support voice recognition.
@@ -455,132 +450,169 @@ export default function VoiceRecorder({
   }
 
   return (
-    <div className="flex flex-col items-center gap-6">
-      <div className="bg-white rounded-3xl shadow-lg p-8 w-full">
-        <div className="flex flex-col items-center gap-6">
+    <div className="flex flex-col items-center gap-4">
+      <div className="bg-white rounded-2xl shadow-lg p-6 w-full">
+        <div className="flex flex-col items-center gap-4">
+          {/* Language Selection */}
+          <div className="w-full">
+            <div className="flex items-center gap-2 mb-3">
+              <Globe size={20} className="text-purple-600" />
+              <p className="text-purple-600 font-bold text-sm">Language / மொழி</p>
+            </div>
+            
+            {/* Auto-detect toggle */}
+            <div className="flex items-center gap-2 mb-3">
+              <input
+                type="checkbox"
+                id="autoDetect"
+                checked={isAutoDetect}
+                onChange={(e) => setIsAutoDetect(e.target.checked)}
+                className="w-4 h-4 text-purple-600 rounded focus:ring-purple-500"
+              />
+              <label htmlFor="autoDetect" className="text-sm text-gray-700">
+                Auto-detect language / தானியங்கு மொழி கண்டறிதல்
+              </label>
+            </div>
+
+            {/* Language dropdown */}
+            {!isAutoDetect && (
+              <select
+                value={selectedLanguage}
+                onChange={(e) => setSelectedLanguage(e.target.value)}
+                className="w-full p-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:border-purple-500"
+              >
+                {SUPPORTED_LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.flag} {lang.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            {/* Current language display */}
+            {isAutoDetect && (
+              <div className="p-2 bg-purple-50 rounded-lg text-sm text-purple-700">
+                🌍 Auto-detecting language (English default)
+              </div>
+            )}
+          </div>
+
+          {/* Status and controls */}
           <div className="text-center">
-            <p className="text-purple-700 font-bold text-lg mb-2">
+            <p className="text-purple-600 font-bold text-lg mb-2">
               {isRetrying
                 ? "🔄 Reconnecting..."
-                : isListening
+                : listening
                 ? "🎤 Listening..."
                 : "🎙️ Voice Input"}
             </p>
-            <p className="text-purple-600 text-sm">
+            <p className="text-purple-500 text-sm">
               {isRetrying
                 ? "Restarting voice recognition, please wait..."
-                : isListening
+                : listening
                 ? "Keep talking! I'm recording your voice."
                 : "Click the microphone to start speaking."}
             </p>
           </div>
 
+          {/* Microphone button */}
           <button
-            onClick={isListening ? stopListening : startListening}
-            disabled={micPermission === "denied" && !isListening}
-            className={`relative w-24 h-24 rounded-full flex items-center justify-center font-bold text-white text-lg transition-all duration-300 ${
-              isListening
-                ? "bg-red-500 hover:bg-red-600 animate-pulse"
+            onClick={listening ? stopListening : startListening}
+            disabled={(micPermission === "denied" && !listening) || isRetrying}
+            className={`relative w-20 h-20 rounded-full flex items-center justify-center font-bold text-white text-lg transition-all duration-300 transform hover:scale-110 ${
+              isRetrying
+                ? "bg-gradient-to-br from-yellow-500 to-orange-500 animate-pulse shadow-lg cursor-not-allowed"
+                : listening
+                ? "bg-gradient-to-br from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 animate-pulse shadow-lg"
                 : micPermission === "denied"
                 ? "bg-gray-400 cursor-not-allowed"
-                : "bg-gradient-to-br from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 shadow-lg hover:scale-105"
+                : "bg-gradient-to-br from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 shadow-lg hover:shadow-xl"
             }`}
           >
-            {isListening ? <Square size={40} /> : <Mic size={40} />}
+            {isRetrying ? (
+              <div className="animate-spin">🔄</div>
+            ) : listening ? (
+              <Square size={32} />
+            ) : (
+              <Mic size={32} />
+            )}
           </button>
 
             <p className="text-purple-600 text-sm font-medium">
-            {isListening ? "Tap to stop recording" : "Tap to start speaking"}
+            {isRetrying 
+              ? "Please wait..." 
+              : listening 
+              ? "Tap to stop recording" 
+              : "Tap to start speaking"}
           </p>
 
-          {/* Permission Tips */}
-          {!isListening && (
-            <>
-              {micPermission === "denied" && (
-                <div className="w-full bg-red-50 border-2 border-red-300 rounded-xl p-4 text-sm">
-                  <p className="font-bold text-red-700 mb-3">
-                    🚫 Microphone Access Blocked
-                  </p>
-                  <div className="text-left space-y-3">
-                    <div>
-                      <p className="font-semibold text-gray-800 mb-1">📱 On Mobile:</p>
-                      <ol className="list-decimal list-inside space-y-1 text-xs text-gray-600 ml-2">
-                        <li>Open your phone <strong>Settings</strong></li>
-                        <li>
-                          Find <strong>Safari</strong> or <strong>Chrome</strong>
-                        </li>
-                        <li>
-                          Enable <strong>Microphone</strong> permission
-                        </li>
-                        <li>Return here and <strong>refresh</strong> the page</li>
-                      </ol>
-                    </div>
-                    <div>
-                      <p className="font-semibold text-gray-800 mb-1">💻 On Desktop:</p>
-                      <ol className="list-decimal list-inside space-y-1 text-xs text-gray-600 ml-2">
-                        <li>
-                          Click the 🔒 icon in your browser's address bar
-                        </li>
-                        <li>
-                          Find <strong>"Microphone"</strong> setting
-                        </li>
-                        <li>
-                          Change to <strong>"Allow"</strong>
-                        </li>
-                        <li>
-                          <strong>Refresh</strong> this page
-                        </li>
-                      </ol>
+          {/* Transcript display */}
+          {transcript && (
+            <div className="w-full p-3 bg-gray-50 rounded-lg">
+              <p className="text-sm text-gray-600 mb-1">What you said:</p>
+              <p className="text-gray-800 font-medium">{transcript}</p>
+              <button
+                onClick={resetTranscript}
+                className="mt-2 text-xs text-purple-600 hover:text-purple-800 underline"
+              >
+                Clear text
+              </button>
+            </div>
+          )}
+
+          {/* Microphone permission status */}
+          {micPermission === "denied" && (
+            <div className="w-full bg-red-50 rounded-xl p-3 text-sm">
+              <p className="font-bold text-red-700 mb-2">
+                🚫 Microphone Access Denied
+              </p>
+              <p className="text-red-600 text-xs">
+                Please enable microphone access in your browser settings to use voice input.
+            </p>
           </div>
-                  </div>
-                </div>
-              )}
-              {micPermission === "prompt" && (
-                <div className="w-full bg-blue-50 border-2 border-blue-200 rounded-xl p-3 text-xs">
-                  <p className="font-semibold text-blue-700 mb-2">
-                    💡 First Time Setup:
-                  </p>
-                  <ol className="list-decimal list-inside space-y-1 text-gray-700 ml-2">
-                    <li>Click the microphone button above</li>
-                    <li>
-                      Your browser will ask: <strong>"Allow microphone access?"</strong>
-                    </li>
-                    <li>
-                      Click <strong>"Allow"</strong> or <strong>"Yes"</strong>
-                    </li>
-                    <li>Start speaking your coloring page idea!</li>
-                  </ol>
-                  <p className="text-gray-600 mt-2 text-center italic">
-                    Permission is saved for next time ✓
-                  </p>
-                </div>
-              )}
-              {micPermission === "granted" && (
-                <div className="w-full bg-green-50 border-2 border-green-200 rounded-xl p-3 text-xs">
-                  <p className="font-semibold text-green-700 mb-1 flex items-center justify-center gap-2">
-                    <span>✅</span>
-                    <span>Microphone Ready</span>
-                  </p>
-                  <p className="text-gray-700 text-center">
-                    Click the button above and start speaking your coloring page idea!
-                  </p>
-                </div>
-              )}
-            </>
           )}
         </div>
       </div>
 
-      {isListening && (
+      {/* Sound wave animation */}
+      {(listening || isRetrying) && (
         <div className="flex gap-2 justify-center">
-          <div className="w-2 h-8 bg-purple-500 rounded-full animate-bounce" />
+          <div className={`w-3 h-6 rounded-full animate-bounce ${
+            isRetrying 
+              ? "bg-gradient-to-t from-yellow-500 to-orange-400" 
+              : "bg-gradient-to-t from-purple-500 to-purple-400"
+          }`} />
           <div
-            className="w-2 h-8 bg-pink-500 rounded-full animate-bounce"
+            className={`w-3 h-8 rounded-full animate-bounce ${
+              isRetrying 
+                ? "bg-gradient-to-t from-yellow-400 to-orange-300" 
+                : "bg-gradient-to-t from-purple-400 to-purple-300"
+            }`}
             style={{ animationDelay: "0.2s" }}
           />
           <div
-            className="w-2 h-8 bg-orange-500 rounded-full animate-bounce"
+            className={`w-3 h-6 rounded-full animate-bounce ${
+              isRetrying 
+                ? "bg-gradient-to-t from-yellow-300 to-orange-200" 
+                : "bg-gradient-to-t from-purple-300 to-purple-200"
+            }`}
             style={{ animationDelay: "0.4s" }}
+          />
+          <div
+            className={`w-3 h-8 rounded-full animate-bounce ${
+              isRetrying 
+                ? "bg-gradient-to-t from-yellow-200 to-orange-100" 
+                : "bg-gradient-to-t from-purple-200 to-purple-100"
+            }`}
+            style={{ animationDelay: "0.6s" }}
+          />
+          <div
+            className={`w-3 h-6 rounded-full animate-bounce ${
+              isRetrying 
+                ? "bg-gradient-to-t from-yellow-100 to-white" 
+                : "bg-gradient-to-t from-purple-100 to-white"
+            }`}
+            style={{ animationDelay: "0.8s" }}
           />
         </div>
       )}
